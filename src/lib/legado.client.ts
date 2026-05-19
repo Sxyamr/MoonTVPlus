@@ -28,6 +28,7 @@ interface ResolvedLegadoConfig {
 const DEFAULT_TIMEOUT_MS = Number(process.env.LEGADO_TIMEOUT_MS || process.env.OPDS_TIMEOUT_MS || 20000);
 const MAX_TEXT_BYTES = Number(process.env.LEGADO_MAX_TEXT_BYTES || 3 * 1024 * 1024);
 const LEGADO_CACHE_VERSION = 'v5';
+const DEFAULT_LEGADO_SEARCH_PAGES = Number(process.env.LEGADO_SEARCH_PAGES || 5);
 const textCache = new Map<string, { expiresAt: number; data: string }>();
 const searchCache = new Map<string, { expiresAt: number; data: BookListItem[] }>();
 const detailCache = new Map<string, { expiresAt: number; data: BookDetail }>();
@@ -453,45 +454,59 @@ export class LegadoClient {
     const cached = searchCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return { source, results: cached.data };
 
-    const targetUrl = buildUrlFromTemplate(rule.searchUrl, source, q, 1);
-    const html = await fetchText(source, targetUrl);
     const results: BookListItem[] = [];
-    const json = parseJsonMaybe(html);
-    if (json && ruleIsJson(rule.ruleSearch.bookList)) {
-      const items = selectJsonItems(json, rule.ruleSearch.bookList);
-      items.forEach((item) => {
-        const detailHref = readJsonRule(item, rule.ruleSearch?.bookUrl, source, targetUrl);
-        const title = readJsonRule(item, rule.ruleSearch?.name, source, targetUrl);
-        if (!title && !detailHref) return;
-        const cover = readJsonRule(item, rule.ruleSearch?.coverUrl, source, targetUrl);
-        results.push(makeItem(source, {
-          id: jsonPrimitiveToString(item?.id) || undefined,
-          title,
-          author: readJsonRule(item, rule.ruleSearch?.author, source, targetUrl),
-          summary: readJsonRule(item, rule.ruleSearch?.intro, source, targetUrl),
-          cover: cover || undefined,
-          detailHref,
-          tags: readJsonRule(item, rule.ruleSearch?.kind, source, targetUrl).split(/[,，\s]+/).filter(Boolean),
-        }));
-      });
-    } else {
-      const $ = cheerio.load(html);
-      const items = selectElements($, $.root(), rule.ruleSearch.bookList);
-      items.each((_, element) => {
-        const root = $(element);
-        const detailHref = readValue($, root, rule.ruleSearch?.bookUrl, targetUrl);
-        const title = readValue($, root, rule.ruleSearch?.name, targetUrl);
-        if (!title && !detailHref) return;
-        const cover = readValue($, root, rule.ruleSearch?.coverUrl, targetUrl);
-        results.push(makeItem(source, {
-          title,
-          author: readValue($, root, rule.ruleSearch?.author, targetUrl),
-          summary: readValue($, root, rule.ruleSearch?.intro, targetUrl),
-          cover: cover || undefined,
-          detailHref,
-          tags: readValue($, root, rule.ruleSearch?.kind, targetUrl).split(/[,，\s]+/).filter(Boolean),
-        }));
-      });
+    const seen = new Set<string>();
+    for (let page = 1; page <= DEFAULT_LEGADO_SEARCH_PAGES; page += 1) {
+      const targetUrl = buildUrlFromTemplate(rule.searchUrl, source, q, page);
+      const html = await fetchText(source, targetUrl);
+      let pageCount = 0;
+      const json = parseJsonMaybe(html);
+      if (json && ruleIsJson(rule.ruleSearch.bookList)) {
+        const items = selectJsonItems(json, rule.ruleSearch.bookList);
+        pageCount = items.length;
+        items.forEach((item) => {
+          const detailHref = readJsonRule(item, rule.ruleSearch?.bookUrl, source, targetUrl);
+          const title = readJsonRule(item, rule.ruleSearch?.name, source, targetUrl);
+          if (!title && !detailHref) return;
+          const cover = readJsonRule(item, rule.ruleSearch?.coverUrl, source, targetUrl);
+          const itemId = jsonPrimitiveToString(item?.id) || undefined;
+          const dedupeKey = itemId || detailHref || `${title}|${cover}`;
+          if (dedupeKey && seen.has(dedupeKey)) return;
+          if (dedupeKey) seen.add(dedupeKey);
+          results.push(makeItem(source, {
+            id: itemId,
+            title,
+            author: readJsonRule(item, rule.ruleSearch?.author, source, targetUrl),
+            summary: readJsonRule(item, rule.ruleSearch?.intro, source, targetUrl),
+            cover: cover || undefined,
+            detailHref,
+            tags: readJsonRule(item, rule.ruleSearch?.kind, source, targetUrl).split(/[,，\s]+/).filter(Boolean),
+          }));
+        });
+      } else {
+        const $ = cheerio.load(html);
+        const items = selectElements($, $.root(), rule.ruleSearch.bookList);
+        pageCount = items.length;
+        items.each((_, element) => {
+          const root = $(element);
+          const detailHref = readValue($, root, rule.ruleSearch?.bookUrl, targetUrl);
+          const title = readValue($, root, rule.ruleSearch?.name, targetUrl);
+          if (!title && !detailHref) return;
+          const cover = readValue($, root, rule.ruleSearch?.coverUrl, targetUrl);
+          const dedupeKey = detailHref || `${title}|${cover}`;
+          if (dedupeKey && seen.has(dedupeKey)) return;
+          if (dedupeKey) seen.add(dedupeKey);
+          results.push(makeItem(source, {
+            title,
+            author: readValue($, root, rule.ruleSearch?.author, targetUrl),
+            summary: readValue($, root, rule.ruleSearch?.intro, targetUrl),
+            cover: cover || undefined,
+            detailHref,
+            tags: readValue($, root, rule.ruleSearch?.kind, targetUrl).split(/[,，\s]+/).filter(Boolean),
+          }));
+        });
+      }
+      if (pageCount === 0) break;
     }
     searchCache.set(cacheKey, { data: results, expiresAt: Date.now() + cacheTTL });
     return { source, results };
