@@ -33,6 +33,7 @@ import {
   ChevronDown,
   ChevronUp,
   Cloud,
+  Copy,
   Database,
   ExternalLink,
   FileText,
@@ -9617,6 +9618,9 @@ const SiteConfigComponent = ({
   const { alertModal, showAlert, hideAlert } = useAlertModal();
   const { isLoading, withLoading } = useLoadingState();
   const [showEnableCommentsModal, setShowEnableCommentsModal] = useState(false);
+  const [bangumiProxyScript, setBangumiProxyScript] = useState('');
+  const [bangumiProxyScriptCopied, setBangumiProxyScriptCopied] =
+    useState(false);
   const [siteSettings, setSiteSettings] = useState<SiteConfig>({
     SiteName: '',
     Announcement: '',
@@ -9722,6 +9726,15 @@ const SiteConfigComponent = ({
         return null;
     }
   };
+
+  useEffect(() => {
+    fetch('/scripts/bangumi-proxy.worker.js')
+      .then((response) => (response.ok ? response.text() : ''))
+      .then(setBangumiProxyScript)
+      .catch((error) => {
+        console.error('加载 Bangumi Workers 脚本失败:', error);
+      });
+  }, []);
 
   useEffect(() => {
     if (config?.SiteConfig) {
@@ -9839,6 +9852,19 @@ const SiteConfigComponent = ({
       EnableComments: true,
     }));
     setShowEnableCommentsModal(false);
+  };
+
+  const handleCopyBangumiProxyScript = async () => {
+    if (!bangumiProxyScript) return;
+    try {
+      await navigator.clipboard.writeText(bangumiProxyScript);
+      setBangumiProxyScriptCopied(true);
+      showSuccess('已复制 Bangumi Workers 脚本', showAlert);
+      setTimeout(() => setBangumiProxyScriptCopied(false), 2000);
+    } catch (error) {
+      console.error('复制 Bangumi Workers 脚本失败:', error);
+      showError('复制失败', showAlert);
+    }
   };
 
   // 保存站点配置
@@ -10623,6 +10649,42 @@ const SiteConfigComponent = ({
               部署环境下不会使用该代理。
             </p>
           </div>
+
+          <details className='group rounded-lg border border-green-200 bg-green-50/60 p-4 dark:border-green-900/50 dark:bg-green-900/10'>
+            <summary className='flex cursor-pointer list-none items-start justify-between gap-3'>
+              <div className='min-w-0'>
+                <label className='block text-sm font-medium text-gray-700 dark:text-gray-300'>
+                  Bangumi Cloudflare Workers 代理脚本
+                </label>
+                <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                  复制后粘贴到 Cloudflare Workers，部署后的域名可填入
+                  Bangumi Base URL 和 Bangumi 图片 Base URL。
+                </p>
+              </div>
+              <div className='flex shrink-0 items-center gap-2'>
+                <button
+                  type='button'
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleCopyBangumiProxyScript();
+                  }}
+                  disabled={!bangumiProxyScript}
+                  className='inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50'
+                >
+                  <Copy className='h-3.5 w-3.5' />
+                  {bangumiProxyScriptCopied ? '已复制' : '复制脚本'}
+                </button>
+                <ChevronDown className='h-4 w-4 text-green-600 transition-transform group-open:rotate-180 dark:text-green-400' />
+              </div>
+            </summary>
+            <pre className='mt-3 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-300'>
+              <code>
+                {bangumiProxyScript ||
+                  '正在加载 /scripts/bangumi-proxy.worker.js ...'}
+              </code>
+            </pre>
+          </details>
         </div>
       </details>
 
