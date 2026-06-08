@@ -40,10 +40,13 @@ import {
   FolderOpen,
   Globe,
   Mail,
+  Monitor,
   Palette,
   Plus,
   Search,
   Settings,
+  Smartphone,
+  Tablet,
   Trash2,
   Tv,
   UserPlus,
@@ -593,10 +596,54 @@ const UserConfig = ({
   } | null>(null);
   const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
   const [deletingUser, setDeletingUser] = useState<string | null>(null);
+  const [showUserDevicesModal, setShowUserDevicesModal] = useState(false);
+  const [selectedDeviceUsername, setSelectedDeviceUsername] = useState<
+    string | null
+  >(null);
+  const [userDevices, setUserDevices] = useState<
+    Array<{
+      tokenId: string;
+      deviceInfo: string;
+      createdAt: number;
+      lastUsed: number;
+      expiresAt: number;
+      isCurrent?: boolean;
+    }>
+  >([]);
+  const [userDevicesLoading, setUserDevicesLoading] = useState(false);
+  const [revokingUserDevice, setRevokingUserDevice] = useState<string | null>(
+    null
+  );
   const trimmedUserSearch = userSearch.trim();
 
   // 当前登录用户名
   const currentUsername = getAuthInfoFromBrowserCookie()?.username || null;
+
+  // 查看用户设备弹窗打开时锁定背景滚动，避免滚动穿透
+  useEffect(() => {
+    if (!showUserDevicesModal) return;
+
+    const scrollY = window.scrollY;
+    const originalStyle = {
+      position: document.body.style.position,
+      top: document.body.style.top,
+      width: document.body.style.width,
+      overflow: document.body.style.overflow,
+    };
+
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.width = '100%';
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.position = originalStyle.position;
+      document.body.style.top = originalStyle.top;
+      document.body.style.width = originalStyle.width;
+      document.body.style.overflow = originalStyle.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [showUserDevicesModal]);
 
   // 判断是否有旧版用户数据需要迁移
   const hasOldUserData =
@@ -838,6 +885,82 @@ const UserConfig = ({
   const handleDeleteUser = (username: string) => {
     setDeletingUser(username);
     setShowDeleteUserModal(true);
+  };
+
+  const getDeviceIcon = (deviceInfo: string) => {
+    const info = deviceInfo.toLowerCase();
+
+    if (
+      info.includes('mobile') ||
+      info.includes('iphone') ||
+      info.includes('android')
+    ) {
+      return Smartphone;
+    }
+
+    if (info.includes('tablet') || info.includes('ipad')) {
+      return Tablet;
+    }
+
+    return Monitor;
+  };
+
+  const handleViewUserDevices = async (username: string) => {
+    setSelectedDeviceUsername(username);
+    setShowUserDevicesModal(true);
+    setUserDevices([]);
+    setUserDevicesLoading(true);
+
+    try {
+      const params = new URLSearchParams({ username });
+      const res = await fetch(`/api/admin/user-devices?${params.toString()}`, {
+        cache: 'no-store',
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `获取设备失败: ${res.status}`);
+      }
+
+      const data = await res.json();
+      setUserDevices(Array.isArray(data.devices) ? data.devices : []);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '获取设备失败', showAlert);
+      setShowUserDevicesModal(false);
+      setSelectedDeviceUsername(null);
+    } finally {
+      setUserDevicesLoading(false);
+    }
+  };
+
+  const handleRevokeUserDevice = async (tokenId: string) => {
+    if (!selectedDeviceUsername) return;
+
+    setRevokingUserDevice(tokenId);
+    try {
+      const res = await fetch('/api/admin/user-devices', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: selectedDeviceUsername,
+          tokenId,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `登出设备失败: ${res.status}`);
+      }
+
+      setUserDevices((prev) =>
+        prev.filter((device) => device.tokenId !== tokenId)
+      );
+      showSuccess('设备已登出', showAlert);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '登出设备失败', showAlert);
+    } finally {
+      setRevokingUserDevice(null);
+    }
   };
 
   const handleConfigureUserApis = (user: {
@@ -1645,6 +1768,13 @@ const UserConfig = ({
                         user.username !== currentUsername &&
                         (role === 'owner' ||
                           (role === 'admin' && user.role === 'user'));
+
+                      // 查看设备权限：站长可查看所有用户，管理员可查看普通用户和自己
+                      const canViewDevices =
+                        role === 'owner' ||
+                        (role === 'admin' &&
+                          (user.role === 'user' ||
+                            user.username === currentUsername));
                       return (
                         <tr
                           key={user.username}
@@ -1752,6 +1882,17 @@ const UserConfig = ({
                             </div>
                           </td>
                           <td className='px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2'>
+                            {/* 查看设备按钮 */}
+                            {canViewDevices && (
+                              <button
+                                onClick={() =>
+                                  handleViewUserDevices(user.username)
+                                }
+                                className={buttonStyles.roundedSecondary}
+                              >
+                                查看设备
+                              </button>
+                            )}
                             {/* 修改密码按钮 */}
                             {canChangePassword && (
                               <button
@@ -1922,6 +2063,159 @@ const UserConfig = ({
           )}
         </div>
       </div>
+
+      {/* 查看用户设备弹窗 */}
+      {showUserDevicesModal &&
+        selectedDeviceUsername &&
+        createPortal(
+          <div
+            className='fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4'
+            onClick={() => {
+              setShowUserDevicesModal(false);
+              setSelectedDeviceUsername(null);
+              setUserDevices([]);
+            }}
+            onTouchMove={(e) => e.preventDefault()}
+            onWheel={(e) => e.preventDefault()}
+            style={{ touchAction: 'none' }}
+          >
+            <div
+              className='bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col'
+              onClick={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onWheel={(e) => e.stopPropagation()}
+              style={{ touchAction: 'auto' }}
+            >
+              <div className='p-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between'>
+                <div>
+                  <h3 className='text-xl font-semibold text-gray-900 dark:text-gray-100'>
+                    用户设备 - {selectedDeviceUsername}
+                  </h3>
+                  <p className='mt-1 text-sm text-gray-500 dark:text-gray-400'>
+                    查看该用户当前仍有效的登录设备
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowUserDevicesModal(false);
+                    setSelectedDeviceUsername(null);
+                    setUserDevices([]);
+                  }}
+                  className='text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className='flex-1 overflow-y-auto overscroll-contain p-6'>
+                {userDevicesLoading ? (
+                  <div className='space-y-3'>
+                    {[1, 2, 3].map((i) => (
+                      <div
+                        key={i}
+                        className='h-20 bg-gray-200 dark:bg-gray-700 rounded-lg animate-pulse'
+                      />
+                    ))}
+                    <div className='text-center text-sm text-gray-500 dark:text-gray-400'>
+                      加载中...
+                    </div>
+                  </div>
+                ) : userDevices.length === 0 ? (
+                  <div className='text-center py-10'>
+                    <Monitor className='w-12 h-12 mx-auto text-gray-400 dark:text-gray-500 mb-3' />
+                    <p className='text-sm text-gray-500 dark:text-gray-400'>
+                      暂无登录设备
+                    </p>
+                  </div>
+                ) : (
+                  <div className='space-y-3'>
+                    {userDevices
+                      .slice()
+                      .sort((a, b) => b.lastUsed - a.lastUsed)
+                      .map((device) => {
+                        const DeviceIcon = getDeviceIcon(device.deviceInfo);
+                        return (
+                          <div
+                            key={device.tokenId}
+                            className={`p-4 rounded-lg border ${
+                              device.isCurrent
+                                ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700'
+                                : 'bg-gray-50 dark:bg-gray-900/40 border-gray-200 dark:border-gray-700'
+                            }`}
+                          >
+                            <div className='flex items-start gap-3'>
+                              <DeviceIcon className='w-5 h-5 mt-0.5 text-gray-600 dark:text-gray-400 flex-shrink-0' />
+                              <div className='min-w-0 flex-1'>
+                                <div className='flex items-center gap-2'>
+                                  <div className='text-sm font-medium text-gray-900 dark:text-gray-100 break-all'>
+                                    {device.deviceInfo || '未知设备'}
+                                  </div>
+                                  {device.isCurrent && (
+                                    <span className='px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 rounded-full whitespace-nowrap'>
+                                      当前设备
+                                    </span>
+                                  )}
+                                </div>
+                                <div className='mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs text-gray-500 dark:text-gray-400'>
+                                  <div>
+                                    登录时间:{' '}
+                                    {new Date(device.createdAt).toLocaleString(
+                                      'zh-CN'
+                                    )}
+                                  </div>
+                                  <div>
+                                    最后活跃:{' '}
+                                    {new Date(device.lastUsed).toLocaleString(
+                                      'zh-CN'
+                                    )}
+                                  </div>
+                                  <div>
+                                    过期时间:{' '}
+                                    {new Date(device.expiresAt).toLocaleString(
+                                      'zh-CN'
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              {!device.isCurrent && (
+                                <button
+                                  onClick={() =>
+                                    handleRevokeUserDevice(device.tokenId)
+                                  }
+                                  disabled={
+                                    revokingUserDevice === device.tokenId
+                                  }
+                                  className='ml-2 px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 hover:border-red-300 dark:border-red-800 dark:hover:border-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap'
+                                >
+                                  {revokingUserDevice === device.tokenId
+                                    ? '登出中...'
+                                    : '登出'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+
+              <div className='p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end'>
+                <button
+                  onClick={() => {
+                    setShowUserDevicesModal(false);
+                    setSelectedDeviceUsername(null);
+                    setUserDevices([]);
+                  }}
+                  className={buttonStyles.secondary}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* 配置用户采集源权限弹窗 */}
       {showConfigureApisModal &&
